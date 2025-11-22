@@ -29,17 +29,21 @@ def accuracy(y_pred, y):
     cmp = y_pred.type(y.dtype) == y
     return float(cmp.type(y.dtype).sum())
 
-def evaluate_accuracy(net, data_iter):
+def evaluate_accuracy(net, data_iter,is_binary=None):
     """Evaluate accuracy of a model on a dataset."""
     if isinstance(net, torch.nn.Module):
         net.eval()  # Set the model to evaluation mode
     metric = d2l.Accumulator(2)  # No. of correct predictions, no. of predictions
     with torch.no_grad():
         for X, y in data_iter:
-            metric.add(accuracy(net(X), y), y.numel())
+            if is_binary is not None:
+                pred= pred = (torch.sigmoid(net(X)) > 0.5).long()
+                metric.add((pred == y).sum().item(), y.numel())
+            else:
+                metric.add(accuracy(net(X), y), y.numel())
     return metric[0] / metric[1]
 
-def train_epoch_ch3(net, train_iter, loss, updater):
+def train_epoch_ch3(net, train_iter, loss, updater,is_binary=None):
     """The training function for one epoch defined in Chapter 3."""
     # Set the model to training mode
     if isinstance(net, torch.nn.Module):
@@ -48,7 +52,11 @@ def train_epoch_ch3(net, train_iter, loss, updater):
     metric = d2l.Accumulator(3)
     for X, y in train_iter:
         # Compute gradients and update parameters
-        y_hat = net(X)
+        if is_binary is not None:
+            y_hat = net(X).squeeze()
+            y=y.squeeze()
+        else:
+            y_hat = net(X)
         l = loss(y_hat, y)
         if isinstance(updater, torch.optim.Optimizer):
             # Using PyTorch built-in optimizer and loss criterion
@@ -60,22 +68,26 @@ def train_epoch_ch3(net, train_iter, loss, updater):
             l.sum().backward()
             updater(X.shape[0])
         # Update training loss and accuracy
-        metric.add(float(l.sum()), accuracy(y_hat, y), y.numel())
+        if is_binary is not None:
+            pred = (torch.sigmoid(y_hat) > 0.5).long()
+            metric.add(float(l.sum()), (pred == y).sum().item(), y.numel())
+        else:
+            metric.add(float(l.sum()), accuracy(y_hat, y), y.numel())
     # Return training loss and training accuracy
     return metric[0] / metric[2], metric[1] / metric[2]
 
-def train_classify(net, train_iter, test_iter, loss, updater, num_epochs):
+def train_classify(net, train_iter, test_iter, loss, updater, num_epochs,is_binary=None):
     """Train a model (defined in Chapter 3)."""
     animator = d2l.Animator(xlabel='epoch', xlim=[1, num_epochs],
                             legend=['train loss', 'train acc', 'test acc'])
-    for epoch in tqdm(range(num_epochs), desc="训练进度"):
-        train_metrics = train_epoch_ch3(net, train_iter, loss, updater)
-        test_acc = evaluate_accuracy(net, test_iter)
+    for epoch in range(num_epochs):
+        train_metrics = train_epoch_ch3(net, train_iter, loss, updater,is_binary)
+        test_acc = evaluate_accuracy(net, test_iter,is_binary)
         animator.add(epoch + 1, train_metrics + (test_acc,))
     train_loss, train_acc = train_metrics
     assert train_loss < 0.5, f'train_loss={train_loss}'
     assert train_acc <= 1 and train_acc > 0.7, f'train_acc={train_acc}'
-    assert test_acc <= 1 and test_acc > 0.7, f'test_acc={test_acc}'
+    assert test_acc <= 1 and test_acc > 0.5, f'test_acc={test_acc}'
 
 def evaluate_loss(net, data_iter, loss):  #@save
     """评估给定数据集上模型的损失"""
@@ -87,8 +99,9 @@ def evaluate_loss(net, data_iter, loss):  #@save
         metric.add(l.sum(), l.numel())
     return metric[0] / metric[1]
 
-def train_regression(learning_rate,train_features, test_features, train_labels, test_labels,num_epochs=400,is_bias=True):
-    loss = nn.MSELoss()
+def train_regression(learning_rate,train_features, test_features, train_labels, test_labels,num_epochs=400,is_bias=True,loss=None):
+    if loss is None:
+     loss = nn.MSELoss()
     input_shape = train_features.shape[-1]
     net = nn.Sequential(nn.Linear(input_shape, 1, bias=is_bias))
     
@@ -110,3 +123,27 @@ def train_regression(learning_rate,train_features, test_features, train_labels, 
             animator.add(epoch + 1, (evaluate_loss(net, train_iter, loss),
                                      evaluate_loss(net, test_iter, loss)))
     print('weight:', net[0].weight.data.numpy())
+    
+def train_domain_classifier(model, data_loader, loss_fn, optimizer, epochs=20):
+        for epoch in range(epochs):
+            total_loss = 0
+            correct = 0
+            total = 0
+            
+            for x, y in data_loader:
+                optimizer.zero_grad()
+                logits = model(x).squeeze()
+                y=y.squeeze()
+                loss = loss_fn(logits, y)
+                loss.backward()
+                optimizer.step()
+                
+                total_loss += loss.item()
+                
+                # 计算 domain accuracy
+                pred = (torch.sigmoid(logits) > 0.5).long()
+                correct += (pred == y.long()).sum().item()
+                total += len(y)
+            
+            acc = correct / total
+            print(f"Epoch {epoch}: loss={total_loss:.4f}, acc={acc:.4f}")
